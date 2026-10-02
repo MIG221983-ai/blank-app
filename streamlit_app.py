@@ -10,9 +10,8 @@ PRODUCTS_URL = f"{FIREBASE_URL}/products"
 GROUPS_URL = f"{FIREBASE_URL}/custom_groups"
 
 st.set_page_config(page_title="База Артикулов", page_icon="📦", layout="centered")
-st.title("📦 База Артикулов по Группам")
+st.title("📦 Умная База Артикулов")
 
-# Функция загрузки товаров
 def load_data():
     try:
         response = requests.get(f"{PRODUCTS_URL}.json", timeout=3)
@@ -22,15 +21,13 @@ def load_data():
         pass
     return {}
 
-# Функция загрузки созданных пользователем групп
 def load_groups():
     try:
         response = requests.get(f"{GROUPS_URL}.json", timeout=3)
         if response.status_code == 200 and response.json():
-            return list(response.json().keys())
+            return sorted(list(response.json().keys()))
     except:
         pass
-    # Базовые группы по умолчанию, если в базе еще ничего нет
     return ["Конфеты", "Печенье", "Чай/Кофе", "Разное"]
 
 products_db = load_data()
@@ -51,18 +48,13 @@ if search_query:
     else:
         st.warning("Товар не найден")
 else:
-    # Динамически собираем список всех групп, которые есть и в шаблоне, и у товаров в базе
     all_groups = sorted(list(set(saved_groups + ["Без группы"])))
     grouped_products = {g: {} for g in all_groups}
     
     if products_db:
         for name, data in products_db.items():
-            if isinstance(data, dict):
-                g = data.get("group", "Без группы")
-                art = data.get("article", "")
-            else:
-                g = "Без группы"
-                art = data
+            g = data.get("group", "Без группы") if isinstance(data, dict) else "Без группы"
+            art = data.get("article", data) if isinstance(data, dict) else data
             if g not in grouped_products:
                 grouped_products[g] = {}
             grouped_products[g][name] = art
@@ -84,7 +76,7 @@ else:
         )
         st.write("")
 
-        # Создаем раскрывающиеся папки
+        # Раскрывающиеся папки
         for group, items in grouped_products.items():
             if items:
                 with st.expander(f"📁 {group} ({len(items)} шт.)"):
@@ -94,13 +86,11 @@ else:
 st.divider()
 
 # 2. БЛОК ДОБАВЛЕНИЯ ТОВАРА И СОЗДАНИЯ ГРУПП
-st.subheader("➕ Добавить новый товар / Создать группу")
-
-# Выбор режима работы с группами
+st.subheader("➕ Добавить новый товар")
 group_mode = st.radio("Как указать группу товаров?", ["Выбрать существующую группу", "➕ Создать новую группу"], horizontal=True)
 
 if group_mode == "Выбрать существующую группу":
-    selected_group = st.selectbox("Выберите группу для товара:", saved_groups)
+    selected_group = st.selectbox("Выберите группу для товара:", saved_groups, key="add_box")
 else:
     selected_group = st.text_input("Введите название НАЗВАНИЕ НОВОЙ ГРУППЫ (например, Молочка):").strip()
 
@@ -109,37 +99,79 @@ new_article = st.text_input("Артикул товара:")
 
 if st.button("Сохранить и отправить всем", type="primary"):
     if not selected_group or selected_group == "":
-        st.error("Укажите название группы или создайте новую!")
+        st.error("Укажите группу товаров!")
     elif not new_name or not new_article:
-        st.error("Заполните название товара и его артикул!")
+        st.error("Заполните название товара и артикул!")
     else:
         try:
-            # 1. Если группа новая — сохраняем её имя в список групп в Firebase
             if group_mode == "➕ Создать новую группу":
                 requests.patch(f"{GROUPS_URL}.json", json={selected_group: True}, timeout=3)
-            
-            # 2. Сохраняем сам товар с привязкой к этой группе
-            payload = {
-                new_name.strip(): {
-                    "group": selected_group,
-                    "article": new_article.strip()
-                }
-            }
+            payload = {new_name.strip(): {"group": selected_group, "article": new_article.strip()}}
             requests.patch(f"{PRODUCTS_URL}.json", json=payload, timeout=3)
-            
-            st.success(f"Успешно! Товар добавлен в группу '{selected_group}'.")
+            st.success(f"Успешно добавлено в группу '{selected_group}'!")
             time.sleep(1)
             st.rerun()
         except Exception as e:
-            st.error(f"Ошибка сети при отправке: {e}")
+            st.error(f"Ошибка сети: {e}")
 
 st.divider()
 
-# 3. БЛОК УДАЛЕНИЯ ТОВАРА
+# 3. БЛОК УПРАВЛЕНИЯ ГРУППАМИ (НОВЫЙ!)
+st.subheader("🛠️ Управление группами (Удаление / Переименование)")
+edit_group_target = st.selectbox("Выберите группу для изменения или удаления:", ["-- Не выбрано --"] + saved_groups)
+
+if edit_group_target != "-- Не выбрано --":
+    action = st.radio("Что сделать с группой?", ["Переименовать старую группу", "Удалить группу полностью"])
+    
+    if action == "Переименовать старую группу":
+        new_group_name = st.text_input(f"Введите новое название для группы '{edit_group_target}':").strip()
+        if st.button("Применить переименование", type="primary"):
+            if new_group_name:
+                try:
+                    # 1. Добавляем новую группу и удаляем старую из списка категорий
+                    requests.patch(f"{GROUPS_URL}.json", json={new_group_name: True}, timeout=3)
+                    requests.delete(f"{GROUPS_URL}/{requests.utils.quote(edit_group_target)}.json", timeout=3)
+                    # 2. Обновляем группу у всех привязанных товаров
+                    update_payload = {}
+                    for name, data in products_db.items():
+                        if isinstance(data, dict) and data.get("group") == edit_group_target:
+                            update_payload[name] = {"group": new_group_name, "article": data.get("article", "")}
+                    if update_payload:
+                        requests.patch(f"{PRODUCTS_URL}.json", json=update_payload, timeout=3)
+                    st.success("Группа успешно переименована везде!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка сети: {e}")
+            else:
+                st.error("Введите новое название!")
+                
+    elif action == "Удалить группу полностью":
+        st.warning(f"Внимание! Группа '{edit_group_target}' исчезнет. Связанные товары НЕ удалятся, они перенесутся в раздел 'Без группы'.")
+        if st.button("Да, удалить группу безвозвратно"):
+            try:
+                # 1. Удаляем из списка категорий
+                requests.delete(f"{GROUPS_URL}/{requests.utils.quote(edit_group_target)}.json", timeout=3)
+                # 2. Переводим товары в статус "Без группы"
+                update_payload = {}
+                for name, data in products_db.items():
+                    if isinstance(data, dict) and data.get("group") == edit_group_target:
+                        update_payload[name] = {"group": "Без группы", "article": data.get("article", "")}
+                if update_payload:
+                    requests.patch(f"{PRODUCTS_URL}.json", json=update_payload, timeout=3)
+                st.success("Группа удалена!")
+                time.sleep(1)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
+
+st.divider()
+
+# 4. БЛОК УДАЛЕНИЯ ТОВАРА
 st.subheader("🗑️ Удалить старый товар")
 if products_db:
     delete_target = st.selectbox("Выберите товар для удаления:", ["-- Не выбрано --"] + list(products_db.keys()))
-    if st.button("Удалить безвозвратно", type="secondary"):
+    if st.button("Удалить товар безвозвратно", type="secondary"):
         if delete_target != "-- Не выбрано --":
             try:
                 encoded_name = requests.utils.quote(delete_target)
