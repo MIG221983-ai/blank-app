@@ -3,46 +3,57 @@ import requests
 import time
 import pandas as pd
 
-# Ссылка на вашу базу Firebase
+# Ссылки на вашу базу Firebase
 PROJECT_ID = "articuli-default-rtdb"
-FIREBASE_URL = f"https://{PROJECT_ID}.europe-west1.firebasedatabase.app/products"
+FIREBASE_URL = f"https://{PROJECT_ID}.europe-west1.firebasedatabase.app"
+PRODUCTS_URL = f"{FIREBASE_URL}/products"
+GROUPS_URL = f"{FIREBASE_URL}/custom_groups"
 
 st.set_page_config(page_title="База Артикулов", page_icon="📦", layout="centered")
 st.title("📦 База Артикулов по Группам")
 
+# Функция загрузки товаров
 def load_data():
     try:
-        response = requests.get(f"{FIREBASE_URL}.json", timeout=3)
+        response = requests.get(f"{PRODUCTS_URL}.json", timeout=3)
         if response.status_code == 200 and response.json():
             return response.json()
     except:
         pass
     return {}
 
-products_db = load_data()
+# Функция загрузки созданных пользователем групп
+def load_groups():
+    try:
+        response = requests.get(f"{GROUPS_URL}.json", timeout=3)
+        if response.status_code == 200 and response.json():
+            return list(response.json().keys())
+    except:
+        pass
+    # Базовые группы по умолчанию, если в базе еще ничего нет
+    return ["Конфеты", "Печенье", "Чай/Кофе", "Разное"]
 
-# СПИСОК ГРУПП ДЛЯ ВАШЕГО МАГАЗИНА (Вы можете добавлять сюда новые группы через запятую)
-AVAILABLE_GROUPS = ["Конфеты", "Печенье", "Чай/Кофе", "Напитки", "Бакалея", "Разное"]
+products_db = load_data()
+saved_groups = load_groups()
 
 # 1. БЛОК ПОИСКА И ОТОБРАЖЕНИЯ ПО ГРУППАМ
 st.subheader("🔍 Поиск и Просмотр")
 search_query = st.text_input("Введите или наговорите название товара для быстрого поиска:")
 
 if search_query:
-    # Мгновенный поиск по всей базе
     filtered = {k: v for k, v in products_db.items() if search_query.lower() in k.lower()}
     if filtered:
         st.write("### Найденные товары:")
         for name, data in filtered.items():
-            # Проверяем старый формат данных (если это была просто строка, а не словарь с группой)
             group_name = data.get("group", "Без группы") if isinstance(data, dict) else "Без группы"
             article = data.get("article", data) if isinstance(data, dict) else data
             st.info(f"📁 [{group_name}] **{name}**  ➔  `Артикул: {article}`")
     else:
         st.warning("Товар не найден")
 else:
-    # Группируем товары для отображения в выпадающих спойлерах
-    grouped_products = {g: {} for g in AVAILABLE_GROUPS + ["Без группы"]}
+    # Динамически собираем список всех групп, которые есть и в шаблоне, и у товаров в базе
+    all_groups = sorted(list(set(saved_groups + ["Без группы"])))
+    grouped_products = {g: {} for g in all_groups}
     
     if products_db:
         for name, data in products_db.items():
@@ -56,7 +67,7 @@ else:
                 grouped_products[g] = {}
             grouped_products[g][name] = art
 
-        # Кнопка скачивания резервной копии в Excel
+        # Кнопка Excel
         raw_list = []
         for name, data in products_db.items():
             g = data.get("group", "Без группы") if isinstance(data, dict) else "Без группы"
@@ -66,46 +77,61 @@ else:
         df = pd.DataFrame(raw_list, columns=["Группа", "Название товара", "Артикул"])
         excel_data = df.to_csv(index=False).encode('utf-8-sig')
         st.download_button(
-            label="📥 Скачать всю базу в Excel",
+            label="📥 Скачать всю базу в Excel (Резервная копия)",
             data=excel_data,
             file_name="baza_artikulov.csv",
             mime="text/csv"
         )
         st.write("")
 
-        # Создаем раскрывающиеся спойлеры для каждой группы товаров
+        # Создаем раскрывающиеся папки
         for group, items in grouped_products.items():
-            if items: # Показываем группу только если в ней есть товары
+            if items:
                 with st.expander(f"📁 {group} ({len(items)} шт.)"):
                     for name, article in items.items():
                         st.write(f"• {name} ➔ `{article}`")
 
 st.divider()
 
-# 2. БЛОК ДОБАВЛЕНИЯ ТОВАРА С ВЫБОРОМ ГРУППЫ
-st.subheader("➕ Добавить новый товар")
-new_group = st.selectbox("Выберите группу для товара:", AVAILABLE_GROUPS)
-new_name = st.text_input("Название товара:")
-new_article = st.text_input("Артикул:")
+# 2. БЛОК ДОБАВЛЕНИЯ ТОВАРА И СОЗДАНИЯ ГРУПП
+st.subheader("➕ Добавить новый товар / Создать группу")
+
+# Выбор режима работы с группами
+group_mode = st.radio("Как указать группу товаров?", ["Выбрать существующую группу", "➕ Создать новую группу"], horizontal=True)
+
+if group_mode == "Выбрать существующую группу":
+    selected_group = st.selectbox("Выберите группу для товара:", saved_groups)
+else:
+    selected_group = st.text_input("Введите название НАЗВАНИЕ НОВОЙ ГРУППЫ (например, Молочка):").strip()
+
+new_name = st.text_input("Название самого товара (например, Сметана 15%):")
+new_article = st.text_input("Артикул товара:")
 
 if st.button("Сохранить и отправить всем", type="primary"):
-    if new_name and new_article:
+    if not selected_group or selected_group == "":
+        st.error("Укажите название группы или создайте новую!")
+    elif not new_name or not new_article:
+        st.error("Заполните название товара и его артикул!")
+    else:
         try:
-            # Сохраняем в Firebase структуру: Название -> {группа, артикул}
+            # 1. Если группа новая — сохраняем её имя в список групп в Firebase
+            if group_mode == "➕ Создать новую группу":
+                requests.patch(f"{GROUPS_URL}.json", json={selected_group: True}, timeout=3)
+            
+            # 2. Сохраняем сам товар с привязкой к этой группе
             payload = {
                 new_name.strip(): {
-                    "group": new_group,
+                    "group": selected_group,
                     "article": new_article.strip()
                 }
             }
-            requests.patch(f"{FIREBASE_URL}.json", json=payload, timeout=3)
-            st.success(f"Товар успешно добавлен в группу '{new_group}'!")
+            requests.patch(f"{PRODUCTS_URL}.json", json=payload, timeout=3)
+            
+            st.success(f"Успешно! Товар добавлен в группу '{selected_group}'.")
             time.sleep(1)
             st.rerun()
-        except:
-            st.error("Ошибка сети. Не удалось отправить.")
-    else:
-        st.error("Заполните название и артикул!")
+        except Exception as e:
+            st.error(f"Ошибка сети при отправке: {e}")
 
 st.divider()
 
@@ -117,7 +143,7 @@ if products_db:
         if delete_target != "-- Не выбрано --":
             try:
                 encoded_name = requests.utils.quote(delete_target)
-                response = requests.delete(f"{FIREBASE_URL}/{encoded_name}.json", timeout=3)
+                response = requests.delete(f"{PRODUCTS_URL}/{encoded_name}.json", timeout=3)
                 if response.status_code == 200:
                     st.success(f"Товар '{delete_target}' успешно удален!")
                     time.sleep(1)
