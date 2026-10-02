@@ -3,7 +3,7 @@ import requests
 import time
 import pandas as pd
 
-# Ссылка на вашу базу Firebase (Строго исходный рабочий путь)
+# Ссылка на вашу базу Firebase
 PROJECT_ID = "articuli-default-rtdb"
 FIREBASE_URL = f"https://{PROJECT_ID}.europe-west1.firebasedatabase.app/products.json"
 
@@ -24,6 +24,36 @@ def load_data():
 
 products_db = load_data()
 
+# Собираем список групп, которые реально существуют в базе данных товаров
+detected_groups = set()
+if products_db:
+    for data in products_db.values():
+        if isinstance(data, dict):
+            detected_groups.add(data.get("group", "Без группы"))
+        else:
+            detected_groups.add("Без группы")
+
+# Если база совсем пустая, делаем базовый набор групп
+if not detected_groups:
+    detected_groups = {"Конфеты", "Печенье", "Чай/Кофе", "Разное"}
+
+# Убираем "Без группы" из списка выбора при добавлении, чтобы не захламлять
+existing_groups = sorted(list(detected_groups - {"Без группы"}))
+if not existing_groups:
+    existing_groups = ["Конфеты", "Печенье", "Чай/Кофе", "Разное"]
+
+all_groups = sorted(list(detected_groups | {"Без группы"}))
+grouped_products = {g: {} for g in all_groups}
+
+# Распределяем товары по их группам
+if products_db:
+    for name, data in products_db.items():
+        g = data.get("group", "Без группы") if isinstance(data, dict) else "Без группы"
+        art = data.get("article", data) if isinstance(data, dict) else data
+        if g not in grouped_products:
+            grouped_products[g] = {}
+        grouped_products[g][name] = art
+
 # 1. БЛОК ПОИСКА И ОТОБРАЖЕНИЯ ПО ГРУППАМ
 st.subheader("🔍 Поиск и Просмотр")
 search_query = st.text_input("Введите или наговорите название товара для быстрого поиска:")
@@ -39,28 +69,8 @@ if search_query:
     else:
         st.warning("Товар не найден")
 else:
-    # Собираем группы на основе товаров, которые РЕАЛЬНО есть в базе
-    detected_groups = set()
     if products_db:
-        for data in products_db.values():
-            if isinstance(data, dict):
-                detected_groups.add(data.get("group", "Без группы"))
-            else:
-                detected_groups.add("Без группы")
-    
-    all_groups = sorted(list(detected_groups if detected_groups else ["Конфеты", "Печенье", "Чай/Кофе", "Разное"]))
-    if "Без группы" not in all_groups:
-        all_groups.append("Без группы")
-        
-    grouped_products = {g: {} for g in all_groups}
-    
-    if products_db:
-        for name, data in products_db.items():
-            g = data.get("group", "Без группы") if isinstance(data, dict) else "Без группы"
-            art = data.get("article", data) if isinstance(data, dict) else data
-            grouped_products[g][name] = art
-
-        # Создание файла Excel (CSV) для бэкапа
+        # Создание файла Excel для бэкапа
         raw_list = []
         for name, data in products_db.items():
             g = data.get("group", "Без группы") if isinstance(data, dict) else "Без группы"
@@ -97,12 +107,6 @@ if user_password == ADMIN_PASSWORD:
     
     with tab1:
         st.subheader("Добавить новый товар")
-        
-        # Список уже существующих в базе групп для выбора
-        existing_groups = sorted(list(set([g for g in grouped_products.keys() if g != "Без группы"])))
-        if not existing_groups:
-            existing_groups = ["Конфеты", "Печенье", "Чай/Кофе", "Разное"]
-            
         group_mode = st.radio("Как указать группу товаров?", ["Выбрать существующую группу", "➕ Создать новую группу"], horizontal=True)
 
         if group_mode == "Выбрать существующую группу":
@@ -121,6 +125,7 @@ if user_password == ADMIN_PASSWORD:
             else:
                 try:
                     payload = {new_name.strip(): {"group": selected_group, "article": new_article.strip()}}
+                    requests.patch(FIREBASE_URL, json={"": ""}, timeout=1) # быстрая проверка сети
                     requests.patch(FIREBASE_URL, json=payload, timeout=3)
                     st.success(f"Успешно добавлено!")
                     time.sleep(1)
@@ -135,9 +140,7 @@ if user_password == ADMIN_PASSWORD:
             if st.button("Удалить товар безвозвратно", type="secondary"):
                 if delete_target != "-- Не выбрано --":
                     try:
-                        # Удаление конкретного товара из Firebase
                         encoded_name = requests.utils.quote(delete_target)
-                        # Пересобираем ссылку для удаления конкретного ключа
                         DEL_URL = f"https://{PROJECT_ID}.europe-west1.firebasedatabase.app/products/{encoded_name}.json"
                         response = requests.delete(DEL_URL, timeout=3)
                         if response.status_code == 200:
