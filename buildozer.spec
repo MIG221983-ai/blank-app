@@ -14,6 +14,7 @@ android.minapi = 21
 android.ndk_api = 21
 android.archs = arm64-v8a, armeabi-v7a
 p4a.branch = master
+android.python_version = 3.10
 
 [buildozer]
 log_level = 2
